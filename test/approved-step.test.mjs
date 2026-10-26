@@ -949,3 +949,27 @@ test("when Shippp cannot be reached at all, fails saying the commit was not judg
   assert.match(run.out, /Shippp could not be reached, so this commit was not judged\./);
   assert.doesNotMatch(run.out, /^Shippp: approved/m);
 });
+
+test("while Shippp is off: asks GitHub for no token, sends Shippp nothing, says so on the run's page, and passes", async () => {
+  // The check and the scan did not run, so there is no report and no word.
+  const run = await runStep({ SHIPPP_OFF: "true", REPORT: undefined, SCAN: undefined });
+
+  assert.equal(run.code, 0, run.out);
+  assert.match(
+    run.out,
+    /^::notice title=Shippp is off::Shippp says this project's account has no active plan, so Shippp is off: this commit was not checked, and nothing was recorded for it\. Renewing at shippp\.io\/account switches Shippp back on\.$/m,
+  );
+  assert.match(run.summary, /^### Shippp is off$/m);
+  assert.deepEqual(asked, []);
+});
+
+test("only the word the plan job writes for off stands it aside: anything else is judged as before", async () => {
+  for (const word of ["", "false", "TRUE", "off", "yes"]) {
+    asked = [];
+    answers.results = [{ status: 201, body: { stored: 3, verdict: verdict(), names: NAMES } }];
+    const run = await runStep({ SHIPPP_OFF: word });
+    assert.equal(run.code, 0, run.out);
+    assert.match(run.out, /^Shippp: approved \(commit cccccccccccc\)$/m, word);
+    assert.equal(posts().length, 1, word);
+  }
+});

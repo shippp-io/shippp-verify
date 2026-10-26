@@ -10,6 +10,15 @@
 #              cannot fail the run: a start that could not be said costs a
 #              dashboard one word for a while.
 #
+#   plan       runs none of the project's code. It asks Shippp, with the
+#              project's key, whether the project's plan is paid, and says
+#              one of two words: off, when Shippp answers that the account
+#              has no active plan, and on for every other answer, an outage
+#              included. Shippp is rented, not owned (ADR-043 in Shippp's own
+#              repository): while it is off, `verify` and `scan` do not run,
+#              and `approved` passes, saying that Shippp is off and that the
+#              commit was not checked. It cannot fail the run.
+#
 #   verify     checks out the commit and runs every layer of the Shippp check
 #              on it, with a database of its own to use and throw away.
 #              Before any layer, it asks whether Shippp's own files in the
@@ -198,7 +207,117 @@ jobs:
             notSaid("The step that tells Shippp this run has started stopped before it had."),
           );
 
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      # To read one file of the commit: the record Shippp's install keeps in
+      # the project, which names the project. Nothing is checked out.
+      contents: read
+    outputs:
+      off: ${{ steps.ask.outputs.off }}
+    steps:
+      # Plain Node, nothing installed and nothing checked out: this job runs
+      # no code but the lines below. However it goes, the job ends well, and
+      # it says off only when Shippp itself answered that the plan has ended.
+      - name: Ask Shippp whether this project's plan is paid
+        id: ask
+        shell: node {0}
+        env:
+          SHIPPP_PASS_URL: https://shippp.io/api/mcp/pass
+          SHIPPP_API_KEY: ${{ secrets.SHIPPP_API_KEY }}
+          # This run's own token, to read with. It is never sent to Shippp.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          const fs = require("fs");
+          const say = (line) => console.log(line);
+
+          /** The job's one word, for the jobs after it. */
+          const decide = (off) => {
+            const file = process.env.GITHUB_OUTPUT;
+            if (file) fs.appendFileSync(file, "off=" + (off ? "true" : "false") + "\n");
+          };
+          const asBefore = (why) => {
+            say(why + " This commit is checked as it always is.");
+            decide(false);
+          };
+
+          /**
+           * Which Shippp project this commit belongs to: the id in the record
+           * Shippp's install keeps in the project, as the pushed commit holds
+           * it. Read as a file's contents through GitHub's API, and parsed as
+           * data. Null when it is not there or does not hold one.
+           */
+          async function projectOf() {
+            const api = process.env.GITHUB_API_URL;
+            const repository = process.env.GITHUB_REPOSITORY;
+            const commit = process.env.GITHUB_SHA;
+            const key = process.env.GITHUB_TOKEN;
+            if (!api || !repository || !commit || !key) return null;
+            try {
+              const res = await fetch(api + "/repos/" + repository + "/contents/context/governance-version.json?ref=" + encodeURIComponent(commit), {
+                headers: {
+                  Authorization: "Bearer " + key,
+                  Accept: "application/vnd.github.raw+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                },
+                signal: AbortSignal.timeout(20000),
+              });
+              if (!res.ok) return null;
+              const record = JSON.parse(await res.text());
+              const project = record !== null && typeof record === "object" ? record.project : null;
+              return typeof project === "string" && /^[0-9a-f-]{36}$/i.test(project) ? project : null;
+            } catch {
+              return null;
+            }
+          }
+
+          async function main() {
+            const key = process.env.SHIPPP_API_KEY;
+            if (!key) {
+              asBefore("This repository has no SHIPPP_API_KEY secret, so Shippp was not asked about the plan.");
+              return;
+            }
+            const projectId = await projectOf();
+            if (!projectId) {
+              asBefore("This job could not read which Shippp project this commit belongs to, so Shippp was not asked about the plan.");
+              return;
+            }
+
+            // A minute: a runner may be the first request to wake Shippp's
+            // server, and a server waking up is not an answer.
+            let res;
+            try {
+              res = await fetch(process.env.SHIPPP_PASS_URL, {
+                method: "POST",
+                headers: { Authorization: "Bearer " + key, "X-Project-Id": projectId },
+                signal: AbortSignal.timeout(60000),
+              });
+            } catch {
+              asBefore("Shippp could not be reached to ask about the plan.");
+              return;
+            }
+            const body = await res.json().catch(() => ({}));
+            if (res.status === 402 && body !== null && typeof body === "object" && body.reason === "no_plan") {
+              say("Shippp says this project's account has no active plan, so Shippp is off for this commit.");
+              decide(true);
+              return;
+            }
+            if (res.status === 200) {
+              say("Shippp confirmed this project's plan.");
+              decide(false);
+              return;
+            }
+            asBefore("Shippp did not confirm the plan (it answered " + res.status + ").");
+          }
+
+          // Anything that goes wrong here is a commit checked as before.
+          main().catch(() => asBefore("The step that asks Shippp about the plan stopped before it had an answer."));
+
   verify:
+    needs: plan
+    # Not while Shippp is off. When the job above could not say, as before.
+    if: ${{ !cancelled() && needs.plan.outputs.off != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -291,6 +410,9 @@ jobs:
           fi
 
   scan:
+    needs: plan
+    # Not while Shippp is off. When the job above could not say, as before.
+    if: ${{ !cancelled() && needs.plan.outputs.off != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -541,9 +663,10 @@ jobs:
           }
 
   approved:
-    needs: [verify, scan]
+    needs: [plan, verify, scan]
     # Also when `verify` or `scan` failed: a failing commit is reported as
-    # failing, with what failed.
+    # failing, with what failed. And when they did not run because Shippp is
+    # off: then this job says so, and passes.
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -558,6 +681,8 @@ jobs:
       - name: Ask Shippp whether this commit is approved
         shell: node {0}
         env:
+          # "true" only when Shippp answered that the plan has ended.
+          SHIPPP_OFF: ${{ needs.plan.outputs.off }}
           REPORT: ${{ needs.verify.outputs.report }}
           # What the scan job said its scan came to. Empty when that job
           # ended before it could say, which is sent as not scanned.
@@ -701,6 +826,17 @@ jobs:
           }
 
           async function main() {
+            // Shippp is off: its plan has ended, so nothing was checked, and
+            // nothing is asked or sent. The founder's work is never held up
+            // by Shippp it has stopped paying for (ADR-043): this passes.
+            if (process.env.SHIPPP_OFF === "true") {
+              const why =
+                "Shippp says this project's account has no active plan, so Shippp is off: this commit was not checked, and nothing was recorded for it. Renewing at shippp.io/account switches Shippp back on.";
+              say("::notice title=Shippp is off::" + why);
+              summary("### Shippp is off\n\n" + why);
+              return;
+            }
+
             let report;
             try {
               report = JSON.parse(Buffer.from(process.env.REPORT ?? "", "base64").toString("utf8"));

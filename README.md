@@ -9,6 +9,12 @@ runs is decided in this repository and cannot be changed from the project.
   has begun, with an identity token for the run, so that a founder's dashboard
   can say "Checking" until the result arrives. It decides nothing, nothing
   waits for it, and it cannot fail the run.
+- **plan** runs none of the project's code. It asks Shippp, with the
+  project's key, whether the project's plan is paid, and says `off` only
+  when Shippp answers that the account has no active plan. While it is off,
+  `verify` and `scan` do not run and `approved` passes, saying Shippp is off
+  and that the commit was not checked. Every other answer, an outage
+  included, is a commit checked as before, and it cannot fail the run.
 - **verify** checks out the commit and runs every layer of the Shippp check on
   it. Before any layer, it asks whether Shippp's own files in the commit are
   what Shippp installs, and says one of two words: `intact` or `changed`. The
@@ -27,6 +33,22 @@ runs is decided in this repository and cannot be changed from the project.
   branch with the run's own token, which is no administrator's; when GitHub
   does not answer, the commit is judged all the same and Shippp is told
   nothing about the branch.
+
+## While Shippp is off
+
+Shippp is rented, not owned (ADR-043, in Shippp's own repository). When a
+project's plan has ended, Shippp stands aside rather than stopping the
+founder's work: the status `Shippp / approved` passes, with a notice on the
+run's page that Shippp is off and the commit was not checked. Nothing is
+sent to Shippp for that commit, and nothing is recorded for it.
+
+- **Who decides.** `plan`, from Shippp's own answer to the project's key: a
+  402 whose reason is `no_plan`. Not `verify`, which runs the project's
+  code and so could say anything.
+- **What does not turn it off.** A key Shippp does not accept, a project not
+  on the key's account, a missing key, Shippp out of reach, or an answer it
+  does not know: each is a commit checked as before, and the check says
+  what is wrong.
 
 ## The app's test settings
 

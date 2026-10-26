@@ -1,0 +1,178 @@
+Shippp Verify — Proprietary Software Licence
+Copyright (c) 2026 Shippp. All rights reserved.
+
+Shippp publishes a copy of the Workflow so that GitHub can run it for
+Shippp's subscribers. Being able to read it, in that copy or any other, is
+not permission to use it. By calling,
+copying, or running the Workflow you agree to these terms. If you do not
+agree, do not call, copy, or run it.
+
+--------------------------------------------------------------------------
+1. DEFINITIONS
+--------------------------------------------------------------------------
+
+"Workflow" means everything in this repository — the workflow file, the
+programs inside it, and its documentation — at every commit and every tag.
+
+"Licensor" means Shippp, the copyright holder.
+
+"You" means the individual or legal entity exercising rights under this
+Licence.
+
+"Active Subscription" means a current, paid, non-terminated subscription to
+a Shippp plan held by You.
+
+"Your Project" means a software project You own or are contractually
+engaged to develop, into which Shippp's governance package has been
+installed under its own licence.
+
+"Competing Product" means any product, service, tool, or model, whether
+offered to others or used only by You, whose purpose includes governing,
+checking, gating, testing, reviewing, or enforcing rules on the work of AI
+coding agents, or compiling or supplying the rules such agents work under,
+and any other product or service that competes with Shippp.
+
+--------------------------------------------------------------------------
+2. GRANT OF LICENCE
+--------------------------------------------------------------------------
+
+For so long as You hold an Active Subscription, Licensor grants You a
+non-exclusive, non-transferable, non-sublicensable, worldwide licence to
+call the Workflow from the continuous-integration configuration of Your
+Project, by reference to a tag this repository publishes (for example
+`@v1`), and to have GitHub run it as so called.
+
+That is the only use this Licence permits. It does not extend to a
+Competing Product: a project that is, or is part of, a Competing Product is
+not Your Project for the purposes of this Licence.
+
+--------------------------------------------------------------------------
+3. WHAT GITHUB'S TERMS ALREADY ALLOW
+--------------------------------------------------------------------------
+
+GitHub's Terms of Service let GitHub's users view a public repository and
+fork it on GitHub. This Licence does not take that away, and adds nothing
+to it. A fork, or any other copy, carries no right to run, modify, or
+distribute the Workflow. Only a call made under Section 2 does.
+
+--------------------------------------------------------------------------
+4. RESTRICTIONS
+--------------------------------------------------------------------------
+
+Except as expressly permitted in Section 2, You may NOT:
+
+  (a) run, or have any service run, a copy of the Workflow or of any part
+      of it, including a fork or a copy held in another repository;
+
+  (b) modify, adapt, translate, or create a derivative of the Workflow;
+
+  (c) copy, redistribute, publish, sublicense, sell, or otherwise make the
+      Workflow, or any substantial part of it, available to anyone, beyond
+      what GitHub's own display of this repository allows;
+
+  (d) use the Workflow, or knowledge derived from studying it, to design,
+      build, train, or operate a Competing Product;
+
+  (e) supply the Workflow, or any part of it, to an AI model, coding agent,
+      or similar tool in order to reproduce or imitate it, or to build
+      anything that does what it does; or use it as training, fine-tuning,
+      or evaluation data for any machine-learning model;
+
+  (f) reconstruct, de-minify, decompile, or otherwise reverse engineer the
+      programs inside the Workflow, except to the limited extent such
+      restriction is prohibited by applicable law; or
+
+  (g) remove, obscure, or alter any copyright, licence, or attribution
+      notice contained in the Workflow.
+
+The line this Licence draws is between CALLING the Workflow and TAKING it.
+Call it from Your Project's CI while You subscribe: permitted. Copy it, run
+a copy, change it, or use it to build something that does what it does:
+not permitted, in any form.
+
+--------------------------------------------------------------------------
+5. RESERVATION OF RIGHTS
+--------------------------------------------------------------------------
+
+The Workflow is licensed, not sold. Licensor retains all right, title, and
+interest in and to the Workflow, including all intellectual property
+rights. No rights are granted except those expressly stated in this
+Licence. No right is granted by implication, estoppel, or otherwise, and
+none by the Workflow being publicly visible.
+
+--------------------------------------------------------------------------
+6. TERM AND TERMINATION
+--------------------------------------------------------------------------
+
+This Licence takes effect when You first call the Workflow and continues
+while You hold an Active Subscription.
+
+It terminates automatically if (i) Your subscription lapses, expires, or is
+cancelled, or (ii) You breach any term of this Licence.
+
+On termination You must stop calling the Workflow. Removing or disabling
+the call in Your Project's configuration is enough. Termination does NOT
+affect Your Project, or the files Shippp's governance package installed in
+it, which remain licensed to You under that package's own licence.
+
+Sections 4, 5, 7, 8, and 9 survive termination.
+
+--------------------------------------------------------------------------
+7. NO WARRANTY
+--------------------------------------------------------------------------
+
+THE WORKFLOW IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+The Workflow checks a pushed commit and reports the result to Shippp. It is
+an aid, not a guarantee. Licensor does not warrant that it will detect
+every defect, prevent every unsafe change, or that its operation will be
+uninterrupted or error-free. You remain solely responsible for the
+correctness, security, and fitness of Your Projects.
+
+--------------------------------------------------------------------------
+8. LIMITATION OF LIABILITY
+--------------------------------------------------------------------------
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL
+LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR
+EXEMPLARY DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, DATA, GOODWILL, OR
+BUSINESS INTERRUPTION, ARISING OUT OF OR RELATING TO THE WORKFLOW OR THIS
+LICENCE, ON ANY THEORY OF LIABILITY, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGES.
+
+LICENSOR'S TOTAL AGGREGATE LIABILITY ARISING OUT OF OR RELATING TO THIS
+LICENCE SHALL NOT EXCEED THE AMOUNT YOU PAID TO LICENSOR FOR THE
+SUBSCRIPTION IN THE TWELVE (12) MONTHS PRECEDING THE EVENT GIVING RISE TO
+THE CLAIM.
+
+Nothing in this Licence excludes or limits liability that cannot lawfully be
+excluded or limited, including liability for death or personal injury caused
+by negligence, or for fraud or fraudulent misrepresentation.
+
+--------------------------------------------------------------------------
+9. GENERAL
+--------------------------------------------------------------------------
+
+Governing law and jurisdiction: this Licence is governed by and construed in
+accordance with the laws of England and Wales, and the courts of England and
+Wales have exclusive jurisdiction over any dispute arising out of or in
+connection with it.
+
+If any provision of this Licence is held unenforceable, it shall be modified
+to the minimum extent necessary to make it enforceable, and the remaining
+provisions shall continue in full force.
+
+Licensor's failure to enforce any provision is not a waiver of its right to
+do so later.
+
+This Licence and the licence of Shippp's governance package are separate:
+each governs its own software. Neither supersedes the Shippp Terms of
+Service governing Your subscription; in the event of a conflict concerning
+the Workflow specifically, this Licence controls.
+
+--------------------------------------------------------------------------
+
+Questions about permitted use, or need terms that differ from these?
+Contact Shippp before relying on any interpretation of this document.

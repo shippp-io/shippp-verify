@@ -34,8 +34,8 @@ const WORKFLOW = fs
 function stepScript() {
   const job = WORKFLOW.indexOf("\n  started:\n");
   assert.notEqual(job, -1, "the started job is in the workflow");
-  const end = WORKFLOW.indexOf("\n  verify:\n", job);
-  assert.notEqual(end, -1, "and it comes before the job that runs the check");
+  const end = WORKFLOW.indexOf("\n  plan:\n", job);
+  assert.notEqual(end, -1, "and it comes before the job that asks about the plan");
   const mine = WORKFLOW.slice(job, end);
   const marker = "        shell: node {0}\n";
   const from = mine.indexOf(marker);
