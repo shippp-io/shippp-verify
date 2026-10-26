@@ -1,0 +1,23 @@
+# This repository's own tests: the step that asks Shippp whether a commit is
+# approved, run as its own process, and what each job of verify.yml is allowed.
+name: self-test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - run: node --test

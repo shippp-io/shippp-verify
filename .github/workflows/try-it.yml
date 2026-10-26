@@ -1,0 +1,33 @@
+# Calls verify.yml from this repository, on purpose, to see it run on GitHub.
+#
+# This repository is not a project: it has no Shippp key and nothing to check.
+# So the run is red, and that is what it is for. It shows that GitHub accepts
+# the file, that a missing key is said in words, that the job that reports
+# runs after the check has failed, and that it then refuses to approve a
+# commit nothing was reported for. The job that says the run has started
+# finds no record of an install here, says so in a notice, and passes.
+#
+# It hands on both secrets a project's own file does. This repository has
+# filled neither, so both arrive empty: the run also shows that GitHub lets a
+# caller name the optional one.
+#
+# By hand, or by pushing a branch whose name starts `try-it/`. Never on an
+# ordinary push or pull request, where a red run would read as a fault.
+name: try-it
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["try-it/**"]
+
+permissions: {}
+
+jobs:
+  Shippp:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/verify.yml
+    secrets:
+      SHIPPP_API_KEY: ${{ secrets.SHIPPP_API_KEY }}
+      SHIPPP_APP_ENV: ${{ secrets.SHIPPP_APP_ENV }}

@@ -1,0 +1,852 @@
+# Shippp's own check of a pushed commit.
+#
+# A project does not hold these steps. It holds a few lines that call this
+# file, so what runs is decided here and cannot be changed from the project.
+#
+#   started    runs none of the project's code. It tells Shippp that this run
+#              has begun, with an identity token for the run, so that a
+#              founder's dashboard can say "Checking" until the result
+#              arrives. It decides nothing, nothing waits for it, and it
+#              cannot fail the run: a start that could not be said costs a
+#              dashboard one word for a while.
+#
+#   verify     checks out the commit and runs every layer of the Shippp check
+#              on it, with a database of its own to use and throw away.
+#              Before any layer, it asks whether Shippp's own files in the
+#              commit are what Shippp installs, and says one of two words:
+#              intact or changed.
+#              The project's code runs in this job, and in no other. It is
+#              given no way to ask GitHub for an identity token.
+#              Where the project's founder has filled the secret
+#              SHIPPP_APP_ENV with the app's test settings, the one step that
+#              runs the check is given them, and no other step is.
+#
+#   scan       reads the commits that were pushed for live credentials, with
+#              a scanner pinned to one exact image. It runs none of the
+#              project's code, and it says one of three words: passed, a
+#              credential was found, or the commits were not scanned. A scan
+#              that read nothing has not passed.
+#
+#   approved   runs none of the project's code. It asks GitHub for an identity
+#              token for this run, which names the repository, the commit and
+#              this file, and sends what `verify` found and what `scan` came
+#              to, to Shippp with it.
+#              Shippp checks the token with GitHub's public keys, checks that
+#              the repository is the one the project's founder linked, and
+#              answers with the commit's verdict. That answer is this job's
+#              result, and so the status GitHub shows: "Shippp / approved".
+#              It also asks GitHub which branch is the default one and who
+#              that branch's required checks bind, and tells Shippp: whether
+#              a red status stops a merge is the repository's setting, and
+#              Shippp shows it as it is.
+#
+# A result sent any other way, with an API key from wherever the key is, is
+# never counted towards a commit.
+name: Shippp
+
+on:
+  workflow_call:
+    secrets:
+      SHIPPP_API_KEY:
+        description: >-
+          The project's Shippp key. The layer check is fetched with it, fresh,
+          for each run. It is not what vouches for the result.
+        required: true
+      SHIPPP_APP_ENV:
+        description: >-
+          Optional. The app's own test settings, as the lines of a .env file
+          (NAME=value) in one value: what the app needs to start in test mode,
+          and the test account its journeys sign in with. Test keys only: the
+          check uses none of it when it holds a provider's live key.
+        required: false
+
+# Nothing, unless a job says otherwise.
+permissions: {}
+
+jobs:
+  # Every job runs on ubuntu-24.04, named, not ubuntu-latest: on Ubuntu 26.04
+  # Playwright 1.60 refuses to install chromium, which this check installs
+  # when a project has Playwright (2026-10-27). Move all of them together.
+  started:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      # To read one file of the commit: the record Shippp's install keeps in
+      # the project, which names the project. Nothing is checked out.
+      contents: read
+    steps:
+      # Plain Node, nothing installed and nothing checked out: this job runs
+      # no code but the lines below. However it goes, the job ends well. A
+      # commit is judged by the three jobs after this one, and Shippp stops
+      # waiting for a run it was told of that never reports.
+      - name: Tell Shippp this run has started
+        shell: node {0}
+        env:
+          SHIPPP_RUNS_URL: https://shippp.io/api/ci/runs
+          # The audience a result is sent under: Shippp checks one kind of
+          # token, one way.
+          SHIPPP_AUDIENCE: https://shippp.io/api/ci/results
+          # This run's own token, to read with. It is no administrator's, and
+          # it is never sent to Shippp.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          const say = (line) => console.log(line);
+          // A notice, never an error: nothing here stops a commit.
+          const notSaid = (why) =>
+            say("::notice title=Shippp::" + why + " This commit is checked all the same, and its result is sent when the check has finished.");
+
+          /**
+           * Which Shippp project this commit belongs to: the id in the record
+           * Shippp's install keeps in the project, as the pushed commit holds
+           * it. Read as a file's contents through GitHub's API, and parsed as
+           * data. Null when it is not there or does not hold one.
+           */
+          async function projectOf() {
+            const api = process.env.GITHUB_API_URL;
+            const repository = process.env.GITHUB_REPOSITORY;
+            const commit = process.env.GITHUB_SHA;
+            const key = process.env.GITHUB_TOKEN;
+            if (!api || !repository || !commit || !key) return null;
+            try {
+              const res = await fetch(api + "/repos/" + repository + "/contents/context/governance-version.json?ref=" + encodeURIComponent(commit), {
+                headers: {
+                  Authorization: "Bearer " + key,
+                  Accept: "application/vnd.github.raw+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                },
+                signal: AbortSignal.timeout(20000),
+              });
+              if (!res.ok) return null;
+              const record = JSON.parse(await res.text());
+              const project = record !== null && typeof record === "object" ? record.project : null;
+              // Sent as it is written, or not at all: Shippp decides whether
+              // it names a project, and whose.
+              return typeof project === "string" && /^[0-9a-f-]{36}$/i.test(project) ? project : null;
+            } catch {
+              return null;
+            }
+          }
+
+          /** An identity token for this run, made out to Shippp. Null, with the reason said, when there is none. */
+          async function identityToken() {
+            const url = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+            const key = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+            if (!url || !key) {
+              notSaid("This job could not ask GitHub for an identity token, so Shippp was not told that this run has started. The job that calls Shippp's workflow needs `permissions: id-token: write`.");
+              return null;
+            }
+            const asked = new URL(url);
+            asked.searchParams.set("audience", process.env.SHIPPP_AUDIENCE);
+            let status = "nothing";
+            try {
+              const res = await fetch(asked, {
+                headers: { Authorization: "bearer " + key },
+                signal: AbortSignal.timeout(20000),
+              });
+              status = String(res.status);
+              const body = await res.json().catch(() => ({}));
+              if (res.ok && typeof body.value === "string" && body.value) {
+                say("::add-mask::" + body.value);
+                return body.value;
+              }
+            } catch {
+              // Said below, like an answer that held no token.
+            }
+            notSaid("GitHub did not give this run an identity token (it answered " + status + "), so Shippp was not told that this run has started.");
+            return null;
+          }
+
+          async function main() {
+            const projectId = await projectOf();
+            if (!projectId) {
+              notSaid("This job could not read which Shippp project this commit belongs to (context/governance-version.json, which Shippp's install writes), so Shippp was not told that this run has started.");
+              return;
+            }
+
+            const token = await identityToken();
+            if (!token) return;
+
+            // Once. The check does not wait on this, and a second try would
+            // tell Shippp nothing the result will not.
+            let res;
+            try {
+              res = await fetch(process.env.SHIPPP_RUNS_URL, {
+                method: "POST",
+                headers: {
+                  Authorization: "Bearer " + token,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ projectId }),
+                signal: AbortSignal.timeout(20000),
+              });
+            } catch {
+              notSaid("Shippp could not be reached to be told that this run has started.");
+              return;
+            }
+            if (res.status === 201) {
+              say("Shippp was told that this run has started.");
+              return;
+            }
+            const body = await res.json().catch(() => ({}));
+            const said = typeof body.error === "string" ? body.error : "Shippp answered " + res.status + ".";
+            notSaid("Shippp did not take this run's start: " + said);
+          }
+
+          // Anything that goes wrong is a start that was not said, and no more.
+          main().catch(() =>
+            notSaid("The step that tells Shippp this run has started stopped before it had."),
+          );
+
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      report: ${{ steps.hand-on.outputs.report }}
+    services:
+      postgres:
+        # From a registry that does not count a runner's pulls. Docker Hub
+        # refuses a shared runner's address once others on it have pulled
+        # their fill, and a check that cannot start its database reports
+        # nothing.
+        image: public.ecr.aws/docker/library/postgres:16
+        env:
+          POSTGRES_USER: shippp
+          POSTGRES_PASSWORD: shippp
+          POSTGRES_DB: shippp_verify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shippp"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: The project's Shippp key
+        env:
+          SHIPPP_API_KEY: ${{ secrets.SHIPPP_API_KEY }}
+        run: |
+          if [ -z "$SHIPPP_API_KEY" ]; then
+            echo "::error title=Shippp could not check this commit::This repository has no secret called SHIPPP_API_KEY, so the layer check cannot be fetched. Add your Shippp key as a repository secret with that name (Settings, Secrets and variables, Actions), then run this again."
+            exit 1
+          fi
+
+      - name: Install what the project needs
+        run: npm ci
+
+      # The journeys layer walks the app in a real browser. Only where the
+      # project has the browser test tools: a project without them is told so
+      # by the layer itself.
+      - name: A browser for the journeys layer
+        run: |
+          if [ -d node_modules/@playwright/test ]; then
+            npx --no-install playwright install --with-deps chromium
+          fi
+
+      # SHIPPP_VERIFY_DATABASE_URL is the only setting here that names a
+      # database. The check creates and drops every table the project's
+      # migrations make, in that database and in no other.
+      #
+      # SHIPPP_REPORT is off: with the key in hand the check would also send
+      # its results the old way, as the project's own account of itself. What
+      # counts for this commit is sent by the next job, and only that.
+      #
+      # SHIPPP_APP_ENV is the app's own test settings, where the project's
+      # founder has filled that secret. It is given to this step and to no
+      # other in the file: not to the install before it, which runs the
+      # project's install scripts, and not to the step after it. The check
+      # hands the settings to an app it starts and to the browser that walks
+      # the journeys, takes no database from them, uses none of them when one
+      # is a provider's live key, and leaves their values out of what it
+      # writes. A project that has not filled it hands on an empty value, and
+      # the check runs as it does without one.
+      - name: Every layer of the Shippp check
+        id: check
+        env:
+          SHIPPP_API_KEY: ${{ secrets.SHIPPP_API_KEY }}
+          SHIPPP_APP_ENV: ${{ secrets.SHIPPP_APP_ENV }}
+          SHIPPP_REPORT: "off"
+          SHIPPP_VERIFY_DATABASE_URL: postgresql://shippp:shippp@localhost:5432/shippp_verify
+        run: npx --no-install shippp-governance verify --all --ci-report="$RUNNER_TEMP/shippp-report.json"
+
+      # Whatever the check found, including a failure: that is a result too.
+      - name: Hand the result to the next job
+        id: hand-on
+        if: always()
+        run: |
+          if [ -s "$RUNNER_TEMP/shippp-report.json" ]; then
+            echo "report=$(base64 -w0 "$RUNNER_TEMP/shippp-report.json")" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Shippp::The layer check left no result. The step above says why."
+          fi
+
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.decide.outputs.outcome }}
+    steps:
+      # Every commit, not only the newest: the scan reads the commits that
+      # were pushed, and the one before them has to be here to know which
+      # those are. Nothing of the project's is run in this job. Its files are
+      # read, by the scanner, and that is all.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # From the commit the branch was at before the push, when GitHub names
+      # one, it is here, and the pushed commit grew from it. Otherwise (a new
+      # branch, a branch that was rewritten, an event that is not a push)
+      # every commit the pushed one grew from: reading too much is safe, and
+      # reading too little is what this job exists to stop.
+      - name: Which commits were pushed
+        id: range
+        env:
+          BEFORE: ${{ github.event.before }}
+          PUSHED: ${{ github.sha }}
+        run: |
+          # A commit id and nothing else, and git itself says the pushed
+          # commit grew from it. Git says no for a commit that is not here,
+          # and for the forty zeros GitHub gives a new branch.
+          since=""
+          if printf '%s' "$BEFORE" | grep -Eq '^[0-9a-f]{40}$' \
+            && git merge-base --is-ancestor "$BEFORE" "$PUSHED" 2>/dev/null; then
+            since="$BEFORE"
+          fi
+          commits=$(git rev-list --count ${since:+"$since.."}"$PUSHED")
+          echo "since=$since" >> "$GITHUB_OUTPUT"
+          echo "commits=$commits" >> "$GITHUB_OUTPUT"
+          if [ -n "$since" ]; then
+            echo "Commits pushed: $commits, since $since."
+          else
+            echo "Commits to read: $commits, every one the pushed commit grew from."
+          fi
+
+      # One exact image of the scanner, named by what it holds: a tag can be
+      # moved to something else, and this cannot. The scanner tries what it
+      # finds against the service it belongs to, which is how it knows a
+      # credential is live.
+      #
+      # It is asked for everything it finds, as lines of JSON, into a file.
+      # Those lines hold the credentials themselves, so this step prints
+      # nothing of them and the next one reads the file. The second pattern
+      # in its settings is Shippp's own: a string no service issues, which
+      # this workflow's tests plant to show that the scanner really reads.
+      #
+      # Whatever the scanner's result, this step ends well. What the scan
+      # came to is decided by the next step, from the two files.
+      - name: Read them for live credentials
+        id: scanner
+        env:
+          SCANNER: ghcr.io/trufflesecurity/trufflehog@sha256:39ee0643ae620664287bcc95f133f3fc8484590d6ca4e7105d96b90dac4b9f6f
+          SINCE: ${{ steps.range.outputs.since }}
+          PUSHED: ${{ github.sha }}
+        run: |
+          cat > "$RUNNER_TEMP/shippp-scan.yml" <<'CONFIG'
+          detectors:
+            - name: ShipppCanary
+              keywords:
+                - shippp_canary_
+              regex:
+                canary: shippp_canary_[0-9a-f]{32}
+          CONFIG
+          set +e
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -v "$RUNNER_TEMP/shippp-scan.yml:/shippp-scan.yml:ro" \
+            "$SCANNER" git file:///repo \
+            --branch "$PUSHED" ${SINCE:+--since-commit "$SINCE"} \
+            --json --no-update --fail-on-scan-errors \
+            --config /shippp-scan.yml \
+            > "$RUNNER_TEMP/shippp-scan.out" 2> "$RUNNER_TEMP/shippp-scan.log"
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
+      # One of three words, handed to the job that asks Shippp:
+      #
+      #   passed            the pushed commits were read, and no live
+      #                     credential was in them;
+      #   credential_found  one was. This job says where, never what;
+      #   not_scanned       the scanner did not finish, or read nothing of
+      #                     commits that were pushed. A scanner that ends well
+      #                     having read 0 bytes has not passed anything.
+      #
+      # Only the first lets this job pass. A string that looks like a
+      # credential and did not work when tried is counted and does not stop a
+      # commit: only a live one does.
+      - name: What the scan came to
+        id: decide
+        if: always()
+        shell: node {0}
+        env:
+          COMMITS: ${{ steps.range.outputs.commits }}
+          SCANNER_EXIT: ${{ steps.scanner.outputs.exit }}
+        run: |
+          const fs = require("fs");
+          const path = require("path");
+
+          const say = (line) => console.log(line);
+          const summary = (text) => {
+            const file = process.env.GITHUB_STEP_SUMMARY;
+            if (file) fs.appendFileSync(file, text + "\n");
+          };
+          const read = (name) => {
+            try {
+              return fs.readFileSync(path.join(process.env.RUNNER_TEMP ?? "", name), "utf8");
+            } catch {
+              return null;
+            }
+          };
+          const lines = (text) => (text ?? "").split(/\r?\n/).filter((l) => l.trim() !== "");
+          const parsed = (line) => {
+            try {
+              const value = JSON.parse(line);
+              return value !== null && typeof value === "object" ? value : null;
+            } catch {
+              return null;
+            }
+          };
+          // A name out of the project's repository, fit to print: one line,
+          // and not long. A file's name can hold a line break, and what
+          // followed it would start a line of its own in this log.
+          const plain = (text) =>
+            String(text ?? "")
+              .replace(/[\u0000-\u001f\u007f]+/g, " ")
+              .trim()
+              .slice(0, 200);
+          const count = (n, one, many) => n + " " + (n === 1 ? one : many);
+
+          /** The word for the next job, the result of this one, and why. */
+          function end(outcome, title, why) {
+            const file = process.env.GITHUB_OUTPUT;
+            if (file) fs.appendFileSync(file, "outcome=" + outcome + "\n");
+            if (outcome === "passed") return;
+            say("::error title=" + title + "::" + why);
+            process.exitCode = 1;
+          }
+          const NOT_SCANNED = "Shippp could not scan the pushed commits";
+          const notScanned = (why) => {
+            summary("### Shippp: the pushed commits were not scanned\n\n" + why);
+            end("not_scanned", NOT_SCANNED, why + " This commit is not approved until a scan has read it. Run this job again.");
+          };
+
+          function main() {
+            const found = lines(read("shippp-scan.out")).map(parsed);
+            const finished = lines(read("shippp-scan.log"))
+              .map(parsed)
+              .filter((l) => l && l.msg === "finished scanning")
+              .pop();
+
+            // What stops a commit: a credential the scanner tried and found
+            // working, and Shippp's own pattern.
+            const places = new Map();
+            let others = 0;
+            for (const f of found) {
+              if (!f) continue;
+              const ours = f.DetectorName === "CustomRegex" && f.ExtraData && f.ExtraData.name === "ShipppCanary";
+              if (f.Verified !== true && !ours) {
+                others++;
+                continue;
+              }
+              const at = ((f.SourceMetadata ?? {}).Data ?? {}).Git ?? {};
+              const kind = ours
+                ? "Shippp's test pattern"
+                : plain(f.DetectorName === "CustomRegex" && f.ExtraData ? f.ExtraData.name : f.DetectorName) || "A credential";
+              const place = kind + " in " + (plain(at.file) || "a file") + ", line " + (Number.isInteger(at.line) ? at.line : "?") + ", commit " + plain(at.commit).slice(0, 12);
+              // Each place once, with whether it is a working credential.
+              places.set(place, !ours);
+            }
+            const counted = finished && Number.isInteger(finished.verified_secrets) ? finished.verified_secrets : 0;
+            const working = Math.max([...places.values()].filter(Boolean).length, counted);
+
+            if (places.size > 0 || counted > 0) {
+              // Said as what it is. Shippp's own pattern is no service's
+              // credential, and there is nothing to revoke.
+              const said =
+                working > 0
+                  ? {
+                      title: "Shippp found a live credential in the pushed commits",
+                      heading: "a live credential is in the pushed commits",
+                      line: count(working, "live credential", "live credentials") + " in the pushed commits.",
+                      why: "The scanner tried what it found against the service it belongs to, and it works. Revoke it where it was issued, then run this job again: a credential that no longer works is not reported. Taking it out of the file is not enough, because it is in the commits that were pushed.",
+                    }
+                  : {
+                      title: "Shippp found its own test pattern in the pushed commits",
+                      heading: "its own test pattern is in the pushed commits",
+                      line: "Shippp's own test pattern is in the pushed commits.",
+                      why: "This is the string Shippp's tests plant to show that the scan reads what it is given. No service issued it and there is nothing to revoke, and it always stops a commit. Taking it out of the file is not enough, because it is in the commits that were pushed.",
+                    };
+              say("Secret scan: " + said.line);
+              for (const place of places.keys()) say("  " + place);
+              summary(
+                ["### Shippp: " + said.heading, ""]
+                  .concat([...places.keys()].map((p) => "- `" + p.split("`").join("'") + "`"))
+                  .concat(["", said.why])
+                  .join("\n"),
+              );
+              end("credential_found", said.title, said.why);
+              return;
+            }
+
+            if (process.env.SCANNER_EXIT !== "0" || !finished) {
+              notScanned("The scanner did not finish reading the pushed commits.");
+              return;
+            }
+            if (found.some((f) => !f)) {
+              notScanned("What the scanner wrote could not be read to the end.");
+              return;
+            }
+            const commits = /^\d+$/.test(process.env.COMMITS ?? "") ? Number(process.env.COMMITS) : null;
+            if (commits === null) {
+              notScanned("This job could not work out which commits were pushed.");
+              return;
+            }
+            const bytes = Number.isInteger(finished.bytes) ? finished.bytes : 0;
+            if (commits > 0 && bytes <= 0) {
+              notScanned("The scanner read 0 bytes of " + count(commits, "commit", "commits") + ".");
+              return;
+            }
+
+            const clean = "Secret scan: read " + bytes + " bytes of " + count(commits, "commit", "commits") + ". No live credential was found.";
+            say(clean);
+            summary("### Shippp: no live credential in the pushed commits\n\n" + clean);
+            if (others > 0) {
+              say(
+                "::notice title=Shippp::" +
+                  (others === 1
+                    ? "1 string in the pushed commits looks like a credential and did not work when tried, or could not be tried. It does not stop this commit."
+                    : others + " strings in the pushed commits look like credentials and did not work when tried, or could not be tried. They do not stop this commit."),
+              );
+            }
+            end("passed");
+          }
+
+          // Anything that goes wrong here is a scan nobody can vouch for.
+          try {
+            main();
+          } catch {
+            notScanned("The step that reads the scanner's result stopped before it had one.");
+          }
+
+  approved:
+    needs: [verify, scan]
+    # Also when `verify` or `scan` failed: a failing commit is reported as
+    # failing, with what failed.
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      # To ask GitHub which branch is the default one and who its required
+      # checks bind. Nothing is checked out.
+      contents: read
+    steps:
+      # Plain Node, nothing installed and nothing checked out: this job runs
+      # no code but the lines below.
+      - name: Ask Shippp whether this commit is approved
+        shell: node {0}
+        env:
+          REPORT: ${{ needs.verify.outputs.report }}
+          # What the scan job said its scan came to. Empty when that job
+          # ended before it could say, which is sent as not scanned.
+          SCAN: ${{ needs.scan.outputs.outcome }}
+          SHIPPP_RESULTS_URL: https://shippp.io/api/ci/results
+          SHIPPP_AUDIENCE: https://shippp.io/api/ci/results
+          # This run's own token, to read with. It is no administrator's, and
+          # it is never sent to Shippp.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          const fs = require("fs");
+
+          const WORDS = {
+            verified: "Verified",
+            checked: "Checked",
+            not_applicable: "Nothing to check",
+            failed: "Check failed",
+            blocked: "Waiting: an earlier layer failed",
+            manual_action_required: "Needs you: a check could not run",
+            escalated: "Left unresolved",
+            not_checked: "Not reported",
+            founder_exception: "Founder exception",
+          };
+
+          const say = (line) => console.log(line);
+          const summary = (text) => {
+            const file = process.env.GITHUB_STEP_SUMMARY;
+            if (file) fs.appendFileSync(file, text + "\n");
+          };
+          // One line GitHub shows on the run's page, then a failing job. The
+          // job fails by this being thrown and caught at the bottom: the
+          // process is left to end by itself, with what it wrote flushed.
+          class Stop extends Error {}
+          const stop = (why) => {
+            say("::error title=Shippp did not approve this commit::" + why);
+            summary("### Shippp: not approved\n\n" + why);
+            throw new Stop(why);
+          };
+          const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+
+          async function identityToken() {
+            const url = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+            const key = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+            if (!url || !key) {
+              stop(
+                "This job could not ask GitHub for an identity token. The job that calls Shippp's workflow needs `permissions: id-token: write`.",
+              );
+            }
+            const asked = new URL(url);
+            asked.searchParams.set("audience", process.env.SHIPPP_AUDIENCE);
+            const res = await fetch(asked, {
+              headers: { Authorization: "bearer " + key },
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok || typeof body.value !== "string" || !body.value) {
+              stop("GitHub did not give this run an identity token (it answered " + res.status + "). Run the job again.");
+            }
+            say("::add-mask::" + body.value);
+            return body.value;
+          }
+
+          /**
+           * Which branch is the default one, and who its required checks bind,
+           * as GitHub says it. Whether a red status stops a merge is a setting
+           * on that branch, and Shippp shows it as it is: it does not assume.
+           *
+           * The branch itself is read, which GitHub answers for any reader.
+           * Its protection settings are answered only for an administrator.
+           *
+           * Never stops the job. A commit is judged on its layers; when this
+           * could not be read, Shippp is told nothing about the branch.
+           */
+          async function defaultBranch() {
+            const api = process.env.GITHUB_API_URL;
+            const repository = process.env.GITHUB_REPOSITORY;
+            const key = process.env.GITHUB_TOKEN;
+            if (!api || !repository || !key) return null;
+            const ask = async (rest) => {
+              const res = await fetch(api + "/repos/" + repository + rest, {
+                headers: {
+                  Authorization: "Bearer " + key,
+                  Accept: "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                },
+                signal: AbortSignal.timeout(20000),
+              });
+              if (!res.ok) throw new Error("GitHub answered " + res.status);
+              return res.json();
+            };
+            try {
+              const name = (await ask("")).default_branch;
+              // What Shippp takes: one line, of a length a branch's name or a
+              // check's can have. Anything else is left out here, because a
+              // report Shippp refuses costs a commit its verdict.
+              const oneLine = (text, most) =>
+                typeof text === "string" && text.length >= 1 && text.length <= most && !/[\u0000-\u001f\u007f]/.test(text);
+              if (!oneLine(name, 255)) return null;
+              const branch = await ask("/branches/" + name.split("/").map(encodeURIComponent).join("/"));
+              const checks = (branch.protection ?? {}).required_status_checks ?? {};
+              const level = checks.enforcement_level;
+              return {
+                name,
+                // Anything but the two words GitHub uses for "enforced" is not enforced.
+                enforcement: level === "everyone" || level === "non_admins" ? level : "off",
+                requiredChecks: (Array.isArray(checks.contexts) ? checks.contexts : [])
+                  .filter((c) => oneLine(c, 200))
+                  .slice(0, 100),
+              };
+            } catch {
+              return null;
+            }
+          }
+
+          /** Sends the report. Tries again only where the same request may succeed later. */
+          async function send(token, report) {
+            for (let attempt = 1; ; attempt++) {
+              let res;
+              try {
+                res = await fetch(process.env.SHIPPP_RESULTS_URL, {
+                  method: "POST",
+                  headers: {
+                    Authorization: "Bearer " + token,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify(report),
+                  signal: AbortSignal.timeout(60000),
+                });
+              } catch {
+                if (attempt >= 3) stop("Shippp could not be reached, so this commit was not judged. Run the job again.");
+                await wait(attempt * 5000);
+                continue;
+              }
+              if (res.status === 503 && attempt < 3) {
+                // Shippp says how long, in seconds. Thirty when it does not.
+                const said = Number(res.headers.get("retry-after") ?? "30");
+                await wait((Number.isFinite(said) && said >= 0 ? Math.min(said, 60) : 30) * 1000);
+                continue;
+              }
+              return { status: res.status, body: await res.json().catch(() => ({})) };
+            }
+          }
+
+          async function main() {
+            let report;
+            try {
+              report = JSON.parse(Buffer.from(process.env.REPORT ?? "", "base64").toString("utf8"));
+            } catch {
+              report = null;
+            }
+            if (!report || !Array.isArray(report.layers) || report.layers.length === 0) {
+              stop("The layer check left no result for this commit, so there is nothing to approve. The verify job says why.");
+            }
+
+            // What the scan of the pushed commits came to, in the scan job's
+            // own word. Always sent: Shippp reads a report that says nothing
+            // as a commit nobody scanned. A scan job that ended without a
+            // word, or with one this file does not know, did not scan.
+            const SCANS = ["passed", "credential_found", "not_scanned"];
+            report.scan = SCANS.includes(process.env.SCAN) ? process.env.SCAN : "not_scanned";
+
+            // Whether the verify job found Shippp's own files in the commit
+            // as its release installs them, in the word that job wrote. This
+            // step runs no check of its own, so it never makes the word up:
+            // it is sent as written, or not at all. A word this file does not
+            // know is left out, because Shippp refuses a whole report over
+            // one word it does not take, and the layers would go with it.
+            // Shippp reads a report that says nothing as a commit nobody
+            // vouched for.
+            const INTEGRITIES = ["intact", "changed"];
+            if (!INTEGRITIES.includes(report.integrity)) delete report.integrity;
+
+            const token = await identityToken();
+
+            const branch = await defaultBranch();
+            if (branch) {
+              report.defaultBranch = branch;
+            } else {
+              say("::notice title=Shippp::GitHub did not say which branch is the default one or what protects it, so Shippp is not told. This commit is judged all the same.");
+            }
+
+            const { status, body } = await send(token, report);
+
+            if (status !== 201 || !body.verdict) {
+              const said = typeof body.error === "string" ? body.error : "Shippp answered " + status + ".";
+              stop(said);
+            }
+
+            const { verdict } = body;
+            const names = body.names ?? {};
+            const title =
+              verdict.verdict === "approved"
+                ? "approved"
+                : verdict.verdict === "approved_with_exceptions"
+                  ? "approved, with " + verdict.exceptions + " founder exception" + (verdict.exceptions === 1 ? "" : "s")
+                  : "not approved";
+            const rows = verdict.layers.map((l) => ({
+              name: names[l.layer] ?? "A layer of the check",
+              word: WORDS[l.state] ?? "Not reported",
+            }));
+            const width = Math.max(...rows.map((r) => r.name.length));
+
+            say("Shippp: " + title + " (commit " + String(verdict.commitSha).slice(0, 12) + ")");
+            for (const r of rows) say("  " + r.name.padEnd(width) + "  " + r.word);
+            summary(
+              ["### Shippp: " + title, "", "| Layer | Result |", "| --- | --- |"]
+                .concat(rows.map((r) => "| " + r.name + " | " + r.word + " |"))
+                .join("\n"),
+            );
+
+            // What the scan came to, as Shippp read it from what this job
+            // sent. It is part of the verdict and belongs to no layer, so a
+            // commit every layer of which cleared can still be stopped here.
+            const SCANNED = {
+              passed: "Secret scan: the pushed commits were read, and no live credential was found.",
+              credential_found:
+                "Secret scan: a live credential is in the pushed commits. The scan job says where. Revoke it where it was issued, then run this again: a credential that no longer works is not reported.",
+              not_scanned: "Secret scan: the pushed commits were not read, so nobody can say they hold no live credential. The scan job says why. Run this again.",
+            };
+            const scanned = Object.hasOwn(SCANNED, verdict.scan) ? SCANNED[verdict.scan] : "Secret scan: Shippp was not told what it came to, and does not approve a commit nobody scanned.";
+            say(scanned);
+            summary("\n" + scanned);
+
+            // Whether Shippp's own files in the commit are what it installs,
+            // as Shippp read it from what this job sent. Part of the verdict
+            // and of no layer, like the scan: the hooks are what judged
+            // every layer.
+            const KEPT = {
+              intact: "Shippp's own files: the hooks in this commit are what Shippp installs.",
+              changed:
+                "Shippp's own files: a hook, or another file Shippp installed, is not what Shippp installs. The verify job says which, and the command that puts it back.",
+            };
+            const kept = Object.hasOwn(KEPT, verdict.integrity)
+              ? KEPT[verdict.integrity]
+              : "Shippp's own files: Shippp was not told whether they are what it installs, and does not approve a commit on a run that did not say. The verify job is where that is said.";
+            say(kept);
+            summary("\n" + kept);
+
+            // Whether GitHub makes a merge wait for this status, as Shippp
+            // read it from what this job sent. Said whatever the verdict is:
+            // a red status that can still be merged past is a different
+            // thing from one that cannot.
+            const waits = body.mergeWaits ?? {};
+            const onto = typeof waits.branch === "string" && waits.branch ? waits.branch : "the default branch";
+            const MERGES = {
+              everyone: "A merge into " + onto + " has to wait for this status, whoever makes it.",
+              except_administrators:
+                "A merge into " + onto + " has to wait for this status, except an administrator's: an administrator can still push straight to " + onto + ".",
+              not_required:
+                "Nothing on GitHub makes a merge into " + onto + " wait for this status. A commit Shippp has not approved can still be merged.",
+            };
+            const merges = Object.hasOwn(MERGES, waits.enforcement) ? MERGES[waits.enforcement] : null;
+            if (merges) {
+              say(merges);
+              summary("\n" + merges);
+            }
+            if (waits.enforcement === "not_required") {
+              // The branch's name is in the message and not in the title: a
+              // name may hold a comma, which ends a title early. A percent
+              // sign is written the way a runner reads one.
+              say("::warning title=Shippp / approved is not a required check::" + merges.split("%").join("%25"));
+            }
+
+            if (verdict.passes !== true) {
+              // What stands in the way: layers, the scan, Shippp's own files,
+              // or more than one of them. Said from the verdict, so that a
+              // commit whose layers all cleared is not told to go and look at
+              // its layers.
+              const layersBlock = Array.isArray(verdict.blocking) ? verdict.blocking.length > 0 : true;
+              const scanBlocks = verdict.scan !== "passed";
+              const filesBlock = verdict.integrity !== "intact";
+              const why = [
+                layersBlock ? "The layers above that did not pass stand in the way. Each one's own output is in the verify job." : null,
+                scanBlocks ? (layersBlock ? "So does the secret scan: see the line above, and the scan job." : "Every layer cleared. The secret scan stands in the way: see the line above, and the scan job.") : null,
+                filesBlock
+                  ? layersBlock || scanBlocks
+                    ? "So do Shippp's own files: see their line above, and the verify job."
+                    : "Every layer cleared. Shippp's own files stand in the way: see their line above, and the verify job."
+                  : null,
+              ].filter(Boolean);
+              if (why.length === 0) why.push("Shippp's answer for this commit is not an approval.");
+              say("::error title=Shippp did not approve this commit::" + why.join(" "));
+              process.exitCode = 1;
+            }
+          }
+
+          // Anything that goes wrong is a commit that was not approved.
+          main().catch((err) => {
+            if (!(err instanceof Stop)) {
+              say("::error title=Shippp did not approve this commit::The step that asks Shippp stopped before it had an answer. Run the job again.");
+            }
+            process.exitCode = 1;
+          });

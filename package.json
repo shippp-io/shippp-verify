@@ -1,0 +1,8 @@
+{
+  "name": "shippp-verify",
+  "private": true,
+  "description": "Shippp's check of a pushed commit, as a workflow a project's CI calls.",
+  "scripts": {
+    "test": "node --test"
+  }
+}
