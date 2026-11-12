@@ -34,6 +34,28 @@ runs is decided in this repository and cannot be changed from the project.
   does not answer, the commit is judged all the same and Shippp is told
   nothing about the branch.
 
+Four of those five run only on a push; `plan` runs on every event. Two more
+run only when a project's workflow calls this file for its weekly run
+(`schedule`) or its founder's "Run workflow" button (`workflow_dispatch`), and
+never on a push. They measure how well the app is built, and decide nothing
+about any commit:
+
+- **quality** checks out the code, installs it and runs
+  `npx shippp-governance quality --json`, the command a founder can run on
+  their own machine. The project's code runs in this job, so it has no way to
+  ask GitHub for an identity token. It hands on the formula version and the
+  figures and nothing else: not the list of files it measured, and, where a
+  part has no number, only the first line of why, which is Shippp's own
+  words; the tools' lines after it stay in this job's log.
+- **quality-report** runs none of the project's code. It rebuilds the figures
+  field by field, reads which project the commit is for from the install's
+  own record, asks GitHub for an identity token for the run and sends the
+  figures to Shippp with it. Shippp checks the token as it checks a result's,
+  and shows the score on the founder's dashboard. When Shippp does not take
+  them, the job fails and says why in Shippp's words.
+
+Neither runs while Shippp is off: the measure waits for `plan`'s word.
+
 ## While Shippp is off
 
 Shippp is rented, not owned (ADR-043, in Shippp's own repository). When a
@@ -159,6 +181,13 @@ first push is.
 - `test/started-step.test.mjs` does the same for the step that says a run has
   started: GitHub's file contents and token endpoints, and Shippp's endpoint
   for a start. Every way it can go wrong ends with the job passing.
+- `test/quality-figures-step.test.mjs` runs the step that keeps a
+  measurement's figures on the command's real output shape: only the formula
+  and the figures leave it, and a file's name never does.
+- `test/quality-report-step.test.mjs` runs the step that sends them, against
+  GitHub's file contents and token endpoints and Shippp's endpoint for a
+  measurement: what is sent, what is never sent, when it tries again, and
+  what it says when Shippp refuses.
 - `test/scan-job.test.mjs` takes the scan job's three steps out of
   `verify.yml` and runs each as its own process, on real repositories made
   with git, with the real scanner. The string it plants is made when the test

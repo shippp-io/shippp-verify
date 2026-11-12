@@ -39,8 +39,14 @@ const PLAN = job("plan");
 const VERIFY = job("verify");
 const SCAN = job("scan");
 const APPROVED = job("approved");
+const QUALITY = job("quality");
+const QUALITY_REPORT = job("quality-report");
 
-test("read the real file, and found the five jobs whole", () => {
+test("read the real file, and found the seven jobs whole", () => {
+  assert.ok(QUALITY.length > 1500, "quality");
+  assert.ok(QUALITY_REPORT.length > 3000, "quality-report");
+  assert.match(QUALITY, /shippp-governance quality --json/);
+  assert.match(QUALITY_REPORT, /shell: node \{0\}/);
   assert.ok(STARTED.length > 1500, "started");
   assert.ok(PLAN.length > 1500, "plan");
   assert.ok(VERIFY.length > 800, "verify");
@@ -50,9 +56,17 @@ test("read the real file, and found the five jobs whole", () => {
   assert.match(SCAN, /docker run/);
   assert.match(APPROVED, /shell: node \{0\}/);
   assert.doesNotMatch(VERIFY, /shell: node \{0\}/);
-  // Five jobs, and no sixth that could be given what none of these has.
+  // Seven jobs, and no eighth that could be given what none of these has.
   const jobs = CODE.slice(CODE.indexOf("\njobs:\n"));
-  assert.deepEqual(jobs.match(/^ {2}[a-z][\w-]*:$/gm), ["  started:", "  plan:", "  verify:", "  scan:", "  approved:"]);
+  assert.deepEqual(jobs.match(/^ {2}[a-z][\w-]*:$/gm), [
+    "  started:",
+    "  plan:",
+    "  verify:",
+    "  scan:",
+    "  approved:",
+    "  quality:",
+    "  quality-report:",
+  ]);
 });
 
 test("the job that says the run has started holds a token and runs nothing of the project's", () => {
@@ -183,17 +197,20 @@ test("the job that holds the token runs nothing of the project's", () => {
 
 test("the token job reads GitHub with this run's own token, which no input or secret can replace", () => {
   assert.match(APPROVED, /^ {10}GITHUB_TOKEN: \$\{\{ github\.token \}\}$/m);
-  // Once here, once in the job that says the run has started, and once in
-  // the job that asks about the plan: each reads one thing of GitHub.
-  assert.equal(CODE.match(/github\.token/g).length, 3);
+  // Once here, once in the job that says the run has started, once in the
+  // job that asks about the plan, and once in the job that sends a build
+  // quality measurement: each reads one thing of GitHub.
+  assert.equal(CODE.match(/github\.token/g).length, 4);
   assert.equal(PLAN.match(/github\.token/g).length, 1);
+  assert.equal(QUALITY_REPORT.match(/github\.token/g).length, 1);
+  assert.doesNotMatch(QUALITY, /GITHUB_TOKEN|github\.token/);
   assert.doesNotMatch(SCAN, /GITHUB_TOKEN|github\.token/);
   // The job that runs the project's code is handed no token by name.
   assert.doesNotMatch(VERIFY, /GITHUB_TOKEN|github\.token/);
 });
 
 test("the token job waits for the check and for the scan, and runs when either failed too", () => {
-  assert.match(APPROVED, /\n {4}needs: \[plan, verify, scan\]\n {4}if: always\(\)\n/);
+  assert.match(APPROVED, /\n {4}needs: \[plan, verify, scan\]\n {4}if: \$\{\{ always\(\) && github\.event_name == 'push' \}\}\n/);
   assert.match(APPROVED, /REPORT: \$\{\{ needs\.verify\.outputs\.report \}\}/);
   // The scan's word, and nothing else of the scan job's: what it found
   // never leaves that job.
@@ -207,7 +224,7 @@ test("the project's key reaches the job that fetches the check and the job that 
   assert.equal(VERIFY.match(/secrets\.SHIPPP_API_KEY/g).length, 2);
   assert.equal(PLAN.match(/secrets\.SHIPPP_API_KEY/g).length, 1);
   assert.equal(CODE.match(/secrets\.SHIPPP_API_KEY/g).length, 3);
-  for (const other of [STARTED, SCAN]) assert.doesNotMatch(other, /SHIPPP_API_KEY/);
+  for (const other of [STARTED, SCAN, QUALITY, QUALITY_REPORT]) assert.doesNotMatch(other, /SHIPPP_API_KEY/);
   assert.doesNotMatch(APPROVED, /secrets\./);
   assert.doesNotMatch(APPROVED, /SHIPPP_API_KEY/);
 });
@@ -229,7 +246,9 @@ test("the app's test settings reach the one step that runs the check, and nothin
   assert.equal(CODE.match(/SHIPPP_APP_ENV/g).length, 3, "declared once, then one name and one value in one step");
   assert.equal(CODE.match(/secrets\.SHIPPP_APP_ENV/g).length, 1);
   assert.equal(VERIFY.match(/secrets\.SHIPPP_APP_ENV/g).length, 1);
-  for (const other of [STARTED, PLAN, SCAN, APPROVED]) assert.doesNotMatch(other, /SHIPPP_APP_ENV/);
+  for (const other of [STARTED, PLAN, SCAN, APPROVED, QUALITY, QUALITY_REPORT]) {
+    assert.doesNotMatch(other, /SHIPPP_APP_ENV/);
+  }
   // In that job, one step holds it: the check. Not the job itself, which
   // would hand it to every step; not the install, which runs the project's
   // install scripts; not the step that hands the result on.
@@ -253,10 +272,12 @@ test("the result is sent to Shippp, and the token is made out to Shippp, and nei
   // Fixed text in the file: no input, variable or secret decides either.
   assert.doesNotMatch(CODE, /\binputs\b|\bvars\./);
   // Two here, and one in what it says while Shippp is off; two in the job
-  // that says the run has started; one in the job that asks about the plan.
+  // that says the run has started; one in the job that asks about the plan;
+  // two in the job that sends a build quality measurement.
   assert.equal(APPROVED.match(/shippp\.io/g).length, 3);
   assert.match(APPROVED, /Renewing at shippp\.io\/account/);
-  assert.equal(CODE.match(/shippp\.io/g).length, 6);
+  assert.equal(QUALITY_REPORT.match(/shippp\.io/g).length, 2);
+  assert.equal(CODE.match(/shippp\.io/g).length, 8);
 });
 
 test("the check uses a database of its own and does not also report with the key", () => {
@@ -305,8 +326,88 @@ test("the job that asks about the plan asks Shippp at a fixed address, and canno
 
 test("while Shippp is off, the check and the scan do not run, and the job that decides is told so by that job alone", () => {
   for (const one of [VERIFY, SCAN]) {
-    assert.match(one, /\n {4}needs: plan\n {4}if: \$\{\{ !cancelled\(\) && needs\.plan\.outputs\.off != 'true' \}\}\n/);
+    assert.match(
+      one,
+      /\n {4}needs: plan\n {4}if: \$\{\{ !cancelled\(\) && github\.event_name == 'push' && needs\.plan\.outputs\.off != 'true' \}\}\n/,
+    );
   }
+  // Nor does the measure, and the job that sends it waits for its figures.
+  assert.match(
+    QUALITY,
+    /\n {4}needs: plan\n {4}if: \$\{\{ !cancelled\(\) && github\.event_name != 'push' && needs\.plan\.outputs\.off != 'true' \}\}\n/,
+  );
   assert.match(APPROVED, /^ {10}SHIPPP_OFF: \$\{\{ needs\.plan\.outputs\.off \}\}$/m);
   assert.deepEqual([...new Set(CODE.match(/needs\.plan\.[\w.]+/g))], ["needs.plan.outputs.off"]);
+});
+
+test("a pushed commit's four jobs run on a push only, and the two that measure build quality never on one", () => {
+  // A project's workflow calls this file for its pushes, and again for its
+  // weekly run and its founder's button. Each job is for one or the other,
+  // so a weekly run never sets a commit's status, and a push never spends
+  // the minutes the measure takes.
+  assert.match(STARTED, /^ {4}if: github\.event_name == 'push'$/m);
+  for (const one of [VERIFY, SCAN, APPROVED]) assert.match(one, /^ {4}if: \$\{\{ [^\n]*github\.event_name == 'push'/m);
+  for (const one of [QUALITY, QUALITY_REPORT]) assert.match(one, /^ {4}if: \$\{\{ [^\n]*github\.event_name != 'push'/m);
+  // The plan is asked on every event: both kinds wait for its word.
+  assert.doesNotMatch(PLAN, /^ {4}if:/m);
+  // Every job says which it is for.
+  assert.equal(CODE.match(/^ {4}if: [^\n]*github\.event_name [!=]= 'push'/gm).length, 6);
+});
+
+test("the job that measures runs the project's code, and cannot ask GitHub for an identity token", () => {
+  assert.match(QUALITY, /\n {4}permissions:\n {6}contents: read\n/);
+  assert.deepEqual(QUALITY.match(/^ {6}[\w-]+: (read|write)$/gm), ["      contents: read"]);
+  assert.doesNotMatch(QUALITY, /id-token/);
+  // No token by name and no secret: nothing here for the project's code to take.
+  assert.doesNotMatch(QUALITY, /GITHUB_TOKEN|github\.token|secrets\./);
+  assert.match(QUALITY, /uses: actions\/checkout@v\d+\n {8}with:\n {10}persist-credentials: false\n/);
+  assert.deepEqual(QUALITY.match(/\buses: \S+/g), ["uses: actions/checkout@v7", "uses: actions/setup-node@v7"]);
+  // The mutation tool the measure fetches needs Node 22 or later.
+  assert.match(QUALITY, /node-version: 22\n/);
+  // The command the project installed, never one fetched by name.
+  for (const line of QUALITY.match(/npx [^\n]*/g)) assert.match(line, /^npx --no-install shippp-governance quality --json /, line);
+  assert.match(QUALITY, /\n {4}timeout-minutes: 60\n/);
+  assert.match(QUALITY, /--minutes=40 /);
+});
+
+test("the measure hands on the formula and the figures, and nothing else of what it found", () => {
+  // One output, from the step that keeps the figures.
+  assert.match(QUALITY, /\n {4}outputs:\n {6}figures: \$\{\{ steps\.figures\.outputs\.figures \}\}\n {4}steps:/);
+  assert.deepEqual(QUALITY.match(/^ {6}\w+: \$\{\{ steps\.[^\n]+$/gm), ["      figures: ${{ steps.figures.outputs.figures }}"]);
+  const keep = QUALITY.slice(QUALITY.indexOf("        id: figures\n"));
+  assert.match(keep, /^ {8}if: always\(\)$/m);
+  assert.match(keep, /shell: node \{0\}/);
+  // It starts nothing and fetches nothing: it reads one file and writes one line.
+  assert.doesNotMatch(keep, /child_process|execSync|spawn|fetch\(|require\("(?!fs"|path")/);
+  assert.equal(keep.match(/appendFileSync\(out, /g).length, 1);
+  assert.match(keep, /"figures=" \+ kept/);
+  // The list of files measured, the files a tool could not read and the
+  // stack are never read out of what the measure printed.
+  assert.doesNotMatch(keep, /\.unread|\.stack\b|measured\.files|measured\.score|measured\.tools/);
+  const scripts = keep.split("\n").filter((l) => l.startsWith("          "));
+  assert.ok(scripts.length > 40);
+  assert.ok(scripts.every((l) => !l.includes("${{")), "no expression is written into a script");
+});
+
+test("the job that sends a build quality measurement holds a token and runs nothing of the project's", () => {
+  assert.match(QUALITY_REPORT, /\n {4}permissions:\n {6}id-token: write\n {6}contents: read\n/);
+  assert.deepEqual(QUALITY_REPORT.match(/^ {6}[\w-]+: (read|write)$/gm), ["      id-token: write", "      contents: read"]);
+  assert.doesNotMatch(QUALITY_REPORT, /\buses:/);
+  assert.doesNotMatch(QUALITY_REPORT, /\bnpm\b|\bnpx\b|\bgit\b|checkout/);
+  assert.doesNotMatch(QUALITY_REPORT, /child_process|execSync|spawn|require\("(?!fs")|import\(|eval\(|new Function/);
+  assert.doesNotMatch(QUALITY_REPORT, /secrets\./);
+  assert.equal(QUALITY_REPORT.match(/^ {6}- /gm).length, 1);
+  // It waits for the measure, and is handed its figures and nothing else of it.
+  assert.match(
+    QUALITY_REPORT,
+    /\n {4}needs: quality\n {4}if: \$\{\{ !cancelled\(\) && github\.event_name != 'push' && needs\.quality\.outputs\.figures != '' \}\}\n/,
+  );
+  assert.deepEqual([...new Set(CODE.match(/needs\.quality\.[\w.]+/g))], ["needs.quality.outputs.figures"]);
+  assert.match(QUALITY_REPORT, /^ {10}FIGURES: \$\{\{ needs\.quality\.outputs\.figures \}\}$/m);
+  // Sent to Shippp at a fixed address, under the audience a result is sent under.
+  assert.match(QUALITY_REPORT, /^ {10}SHIPPP_QUALITY_URL: https:\/\/shippp\.io\/api\/ci\/quality$/m);
+  assert.match(QUALITY_REPORT, /^ {10}SHIPPP_AUDIENCE: https:\/\/shippp\.io\/api\/ci\/results$/m);
+  const scripts = QUALITY_REPORT.split("\n").filter((l) => l.startsWith("          ") && !/^ {10}[A-Z_]+: /.test(l));
+  assert.ok(scripts.length > 100);
+  assert.ok(scripts.every((l) => !l.includes("${{")), "no expression is written into a script");
 });
