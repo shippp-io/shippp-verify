@@ -13,6 +13,13 @@
 #
 # By hand, or by pushing a branch whose name starts `try-it/`. Never on an
 # ordinary push or pull request, where a red run would read as a fault.
+#
+# A push takes the path a pushed commit takes, above. By hand it takes the
+# path a project's weekly run and its "Run workflow" button take: `plan`
+# finds no key and says so, then `quality` stops at the install, because
+# this repository has no lockfile and nothing to measure, and
+# `quality-report`, handed no figures, stands aside. The four jobs that check
+# a pushed commit stand aside too.
 name: try-it
 
 on:

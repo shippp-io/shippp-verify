@@ -49,6 +49,26 @@
 #              a red status stops a merge is the repository's setting, and
 #              Shippp shows it as it is.
 #
+# Those four run only on a push. Two more run only on the events a project's
+# workflow sends for its weekly run and for its founder's "Run workflow"
+# button, and never on a push (ADR-060 in Shippp's own repository). They
+# measure how well the app is built, and decide nothing about any commit:
+#
+#   quality         checks out the code, installs it, and measures it with
+#                   open tools Shippp did not write. The project's code runs
+#                   in this job, so it is given no way to ask GitHub for an
+#                   identity token. It hands on figures and nothing else: no
+#                   file name, no tool output, nothing of the code.
+#
+#   quality-report  runs none of the project's code. It asks GitHub for an
+#                   identity token for this run and sends the figures to
+#                   Shippp with it, for the project the install's record
+#                   names. Shippp checks the token as it checks a result's,
+#                   and shows the score on the founder's dashboard.
+#
+# Neither runs while Shippp is off: `plan` runs on every event, and both wait
+# for its word.
+#
 # A result sent any other way, with an API key from wherever the key is, is
 # never counted towards a commit.
 name: Shippp
@@ -77,6 +97,9 @@ jobs:
   # Playwright 1.60 refuses to install chromium, which this check installs
   # when a project has Playwright (2026-10-27). Move all of them together.
   started:
+    # A pushed commit's check only: the weekly measure is no run a dashboard
+    # waits on.
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -317,7 +340,8 @@ jobs:
   verify:
     needs: plan
     # Not while Shippp is off. When the job above could not say, as before.
-    if: ${{ !cancelled() && needs.plan.outputs.off != 'true' }}
+    # A pushed commit's check only.
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.plan.outputs.off != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -412,7 +436,8 @@ jobs:
   scan:
     needs: plan
     # Not while Shippp is off. When the job above could not say, as before.
-    if: ${{ !cancelled() && needs.plan.outputs.off != 'true' }}
+    # A pushed commit's check only.
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.plan.outputs.off != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -666,8 +691,9 @@ jobs:
     needs: [plan, verify, scan]
     # Also when `verify` or `scan` failed: a failing commit is reported as
     # failing, with what failed. And when they did not run because Shippp is
-    # off: then this job says so, and passes.
-    if: always()
+    # off: then this job says so, and passes. A pushed commit's check only:
+    # on the weekly run there is no status for it to set.
+    if: ${{ always() && github.event_name == 'push' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -983,6 +1009,315 @@ jobs:
           main().catch((err) => {
             if (!(err instanceof Stop)) {
               say("::error title=Shippp did not approve this commit::The step that asks Shippp stopped before it had an answer. Run the job again.");
+            }
+            process.exitCode = 1;
+          });
+
+  quality:
+    needs: plan
+    # The project's weekly run and its founder's button, never a push, and
+    # not while Shippp is off. When the plan job could not say, as before.
+    if: ${{ !cancelled() && github.event_name != 'push' && needs.plan.outputs.off != 'true' }}
+    runs-on: ubuntu-24.04
+    # The measure is given forty minutes for the mutation run; the rest is
+    # the install and the tools' download.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      figures: ${{ steps.figures.outputs.figures }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The mutation tool the measure fetches needs Node 22 or later.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install what the project needs
+        run: npm ci
+
+      # The same command a founder can run on their own machine, from the
+      # package the project already has. Its tools are fetched at the versions
+      # it names; nothing is added to the project. The figures and the score
+      # go to a file in the runner's temporary folder, which the next step
+      # reads; the list of files measured stays there.
+      - name: Measure how well the app is built
+        run: npx --no-install shippp-governance quality --json --minutes=40 > "$RUNNER_TEMP/shippp-quality.json"
+
+      # Only these leave this job: the formula version and the figures, each
+      # checked to be what the measure prints, and the reason a part has no
+      # number cut to its first line, which is Shippp's own words. What
+      # follows it, the tools' last lines, may name a file, and stays in this
+      # job's log.
+      - name: Keep the figures, and nothing else
+        id: figures
+        if: always()
+        shell: node {0}
+        run: |
+          const fs = require("fs");
+          const path = require("path");
+          const say = (line) => console.log(line);
+
+          const count = (n) => Number.isInteger(n) && n >= 0 && n <= 1000000000;
+          const oneLine = (text) => {
+            if (typeof text !== "string") return null;
+            const first = text.split("\n")[0].trim().slice(0, 200);
+            return first.length > 0 && !/[\u0000-\u001f\u007f]/.test(first) ? first : null;
+          };
+
+          /** The report's figures, or null when they are not what the measure prints. */
+          function figuresOf(measured) {
+            const f = measured && typeof measured === "object" ? measured.figures : null;
+            if (!f || typeof f !== "object") return null;
+            const t = f.tests;
+            let tests = null;
+            if (t && t.kind === "measured" && count(t.caught) && count(t.made) && t.caught <= t.made) {
+              tests = { kind: "measured", caught: t.caught, made: t.made };
+            } else if (t && (t.kind === "none" || t.kind === "not-measured") && oneLine(t.reason)) {
+              tests = { kind: t.kind, reason: oneLine(t.reason) };
+            }
+            const pct = f.duplicatedPercent;
+            if (
+              !tests ||
+              ![f.files, f.lines, f.complexFunctions, f.importLoops].every(count) ||
+              typeof pct !== "number" || !(pct >= 0 && pct <= 100)
+            ) {
+              return null;
+            }
+            return {
+              files: f.files,
+              lines: f.lines,
+              complexFunctions: f.complexFunctions,
+              duplicatedPercent: pct,
+              importLoops: f.importLoops,
+              tests,
+            };
+          }
+
+          function main() {
+            const file = path.join(process.env.RUNNER_TEMP || ".", "shippp-quality.json");
+            let measured;
+            try {
+              measured = JSON.parse(fs.readFileSync(file, "utf8"));
+            } catch {
+              say("::warning title=Shippp::The measure left no figures to read. The step above says why.");
+              return;
+            }
+            const formula = measured && Number.isInteger(measured.formula) ? measured.formula : null;
+            const figures = figuresOf(measured);
+            if (formula === null || figures === null) {
+              say("::warning title=Shippp::The measure's figures were not in the form Shippp reads, so none were sent.");
+              return;
+            }
+            if (figures.files === 0) {
+              say("::warning title=Shippp::The measure found no source files it reads, so nothing was sent.");
+              return;
+            }
+            const out = process.env.GITHUB_OUTPUT;
+            const kept = Buffer.from(JSON.stringify({ formula, figures })).toString("base64");
+            if (out) fs.appendFileSync(out, "figures=" + kept + "\n");
+            say("Figures kept: " + figures.files + " source files, " + figures.lines + " lines.");
+          }
+
+          main();
+
+  quality-report:
+    needs: quality
+    # Only once the measure handed figures on: then it ran, for this event,
+    # while Shippp was on.
+    if: ${{ !cancelled() && github.event_name != 'push' && needs.quality.outputs.figures != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      # To read one file of the commit: the record Shippp's install keeps in
+      # the project, which names the project. Nothing is checked out.
+      contents: read
+    steps:
+      # Plain Node, nothing installed and nothing checked out: this job runs
+      # no code but the lines below.
+      - name: Send Shippp how well the app is built
+        shell: node {0}
+        env:
+          FIGURES: ${{ needs.quality.outputs.figures }}
+          SHIPPP_QUALITY_URL: https://shippp.io/api/ci/quality
+          # The audience a result is sent under: Shippp checks one kind of
+          # token, one way.
+          SHIPPP_AUDIENCE: https://shippp.io/api/ci/results
+          # This run's own token, to read with. It is no administrator's, and
+          # it is never sent to Shippp.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          const fs = require("fs");
+          const say = (line) => console.log(line);
+          const summary = (text) => {
+            const file = process.env.GITHUB_STEP_SUMMARY;
+            if (file) fs.appendFileSync(file, text + "\n");
+          };
+          // One line GitHub shows on the run's page, then a failing job: the
+          // measure decides nothing, but a measurement Shippp did not take is
+          // one the founder's dashboard will not show, and they are told why.
+          class Stop extends Error {}
+          const stop = (why) => {
+            say("::error title=Shippp did not take this measurement::" + why);
+            summary("### Shippp: build quality not sent\n\n" + why);
+            throw new Stop(why);
+          };
+          const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+
+          const count = (n) => Number.isInteger(n) && n >= 0 && n <= 1000000000;
+          const oneLine = (text) =>
+            typeof text === "string" && text.length >= 1 && text.length <= 200 && !/[\u0000-\u001f\u007f]/.test(text);
+
+          /**
+           * The figures the measure handed on, rebuilt field by field: the job
+           * that made them ran the project's code, so nothing it handed on is
+           * sent that is not one of these, in this form.
+           */
+          function figuresFrom(handed) {
+            let kept;
+            try {
+              kept = JSON.parse(Buffer.from(handed || "", "base64").toString("utf8"));
+            } catch {
+              return null;
+            }
+            const f = kept && typeof kept === "object" ? kept.figures : null;
+            if (!f || typeof f !== "object" || !Number.isInteger(kept.formula)) return null;
+            const t = f.tests;
+            let tests = null;
+            if (t && t.kind === "measured" && count(t.caught) && count(t.made) && t.caught <= t.made) {
+              tests = { kind: "measured", caught: t.caught, made: t.made };
+            } else if (t && (t.kind === "none" || t.kind === "not-measured") && oneLine(t.reason)) {
+              tests = { kind: t.kind, reason: t.reason };
+            }
+            const pct = f.duplicatedPercent;
+            if (
+              !tests ||
+              ![f.files, f.lines, f.complexFunctions, f.importLoops].every(count) ||
+              typeof pct !== "number" || !(pct >= 0 && pct <= 100)
+            ) {
+              return null;
+            }
+            return {
+              formula: kept.formula,
+              figures: {
+                files: f.files,
+                lines: f.lines,
+                complexFunctions: f.complexFunctions,
+                duplicatedPercent: pct,
+                importLoops: f.importLoops,
+                tests,
+              },
+            };
+          }
+
+          /**
+           * Which Shippp project this commit belongs to: the id in the record
+           * Shippp's install keeps in the project, as the measured commit
+           * holds it. Read as a file's contents through GitHub's API, and
+           * parsed as data. Null when it is not there or does not hold one.
+           */
+          async function projectOf() {
+            const api = process.env.GITHUB_API_URL;
+            const repository = process.env.GITHUB_REPOSITORY;
+            const commit = process.env.GITHUB_SHA;
+            const key = process.env.GITHUB_TOKEN;
+            if (!api || !repository || !commit || !key) return null;
+            try {
+              const res = await fetch(api + "/repos/" + repository + "/contents/context/governance-version.json?ref=" + encodeURIComponent(commit), {
+                headers: {
+                  Authorization: "Bearer " + key,
+                  Accept: "application/vnd.github.raw+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                },
+                signal: AbortSignal.timeout(20000),
+              });
+              if (!res.ok) return null;
+              const record = JSON.parse(await res.text());
+              const project = record !== null && typeof record === "object" ? record.project : null;
+              return typeof project === "string" && /^[0-9a-f-]{36}$/i.test(project) ? project : null;
+            } catch {
+              return null;
+            }
+          }
+
+          async function identityToken() {
+            const url = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+            const key = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+            if (!url || !key) {
+              stop("This job could not ask GitHub for an identity token. The job that calls Shippp's workflow needs `permissions: id-token: write`.");
+            }
+            const asked = new URL(url);
+            asked.searchParams.set("audience", process.env.SHIPPP_AUDIENCE);
+            let status = "nothing";
+            try {
+              const res = await fetch(asked, {
+                headers: { Authorization: "bearer " + key },
+                signal: AbortSignal.timeout(20000),
+              });
+              status = String(res.status);
+              const body = await res.json().catch(() => ({}));
+              if (res.ok && typeof body.value === "string" && body.value) {
+                say("::add-mask::" + body.value);
+                return body.value;
+              }
+            } catch {
+              // Said below, like an answer that held no token.
+            }
+            stop("GitHub did not give this run an identity token (it answered " + status + "). Run the workflow again.");
+          }
+
+          /** Sends the report. Tries again only where the same request may succeed later. */
+          async function send(token, report) {
+            for (let attempt = 1; ; attempt += 1) {
+              let res = null;
+              try {
+                res = await fetch(process.env.SHIPPP_QUALITY_URL, {
+                  method: "POST",
+                  headers: {
+                    Authorization: "Bearer " + token,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify(report),
+                  signal: AbortSignal.timeout(60000),
+                });
+              } catch {
+                res = null;
+              }
+              const again = res === null || res.status === 429 || res.status >= 500;
+              if (!again || attempt === 3) return res;
+              const after = res ? Number(res.headers.get("retry-after")) : NaN;
+              await wait(Number.isFinite(after) && after > 0 && after <= 60 ? after * 1000 : 10000 * attempt);
+            }
+          }
+
+          async function main() {
+            const report = figuresFrom(process.env.FIGURES);
+            if (!report) stop("The measure handed on figures this job does not recognise, so none were sent.");
+
+            const projectId = await projectOf();
+            if (!projectId) {
+              stop("This job could not read which Shippp project this commit belongs to (context/governance-version.json, which Shippp's install writes).");
+            }
+
+            const token = await identityToken();
+            const res = await send(token, { projectId, ...report });
+            if (res === null) stop("Shippp could not be reached. Run the workflow again.");
+            if (res.status === 201) {
+              say("Shippp has this measurement. Your dashboard shows its score.");
+              summary("### Shippp: build quality sent\n\nYour dashboard shows its score.");
+              return;
+            }
+            const body = await res.json().catch(() => ({}));
+            stop(typeof body.error === "string" && body.error ? body.error : "Shippp answered " + res.status + ".");
+          }
+
+          main().catch((err) => {
+            if (!(err instanceof Stop)) {
+              say("::error title=Shippp did not take this measurement::The step that sends it stopped before it had an answer. Run the workflow again.");
             }
             process.exitCode = 1;
           });

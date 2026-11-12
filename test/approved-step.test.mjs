@@ -30,13 +30,17 @@ const WORKFLOW = fs
 function stepScript() {
   const job = WORKFLOW.indexOf("\n  approved:\n");
   assert.notEqual(job, -1, "the approved job is in the workflow");
+  // To the next job: the two that measure build quality come after it.
+  const end = WORKFLOW.indexOf("\n  quality:\n", job);
+  assert.notEqual(end, -1, "and the job that measures build quality comes after it");
+  const mine = WORKFLOW.slice(job, end + 1);
   const marker = "        shell: node {0}\n";
-  const from = WORKFLOW.indexOf(marker, job);
+  const from = mine.indexOf(marker);
   assert.notEqual(from, -1, "the step that runs as Node is in the approved job");
-  assert.equal(WORKFLOW.indexOf(marker, from + 1), -1, "and it is the one step there that does");
-  const run = WORKFLOW.indexOf("        run: |\n", from);
+  assert.equal(mine.indexOf(marker, from + 1), -1, "and it is the one step there that does");
+  const run = mine.indexOf("        run: |\n", from);
   assert.notEqual(run, -1);
-  const lines = WORKFLOW.slice(run + "        run: |\n".length).split("\n");
+  const lines = mine.slice(run + "        run: |\n".length).split("\n");
   const body = [];
   for (const line of lines) {
     if (line.trim() !== "" && !line.startsWith("          ")) break;
